@@ -46,12 +46,6 @@ class Action:
     num: int
 
 
-@dataclass
-class Move:
-    actions: List[Action]
-    definite: bool
-
-
 def intersects(e: Edge, f: Edge) -> bool:
     # figure out which is horizontal
     if e.a.row == e.b.row and e.a.col != e.b.col and \
@@ -186,9 +180,9 @@ class Board:
         """Get the edges that are blocking an edge."""
         return [e for e in self.collisions[edge] if e.val > 0]
 
-    def do(self, move: Move):
+    def do(self, move: List[Action]):
         """Perform a list of actions, adding it to the backtrack stack."""
-        for action in move.actions:
+        for action in move:
             self._do_action(action)
 
     def _do_action(self, action: Action):
@@ -212,9 +206,9 @@ class Board:
 
         e.val += num
 
-    def undo(self, move: Move):
+    def undo(self, move: List[Action]):
         """Pop the last action from the backtrack stack and undo it."""
-        for action in move.actions:
+        for action in move:
             self._undo_action(action)
 
     def _undo_action(self, action: Action):
@@ -293,59 +287,83 @@ def in_bad_state(board: Board) -> bool:
     return False
 
 
-def find_move(board: Board, start_at: int) -> Tuple[Union[Move, None], int]:
-    """Find a move, preferring one that is logically required by the board
-    state."""
-    # look for an action that must be performed
-    for ix in range(start_at, len(board.nodes)):
-        # an adjacent edge needs to be filled if removing it would make it
-        # impossible to satisfy the node's target value.
-        node = board.nodes[ix]
-
-        edges_left = board.edges_left(node)
-        if edges_left == 0:
-            continue
-
-        unblocked = board.unblocked_edges(node)
-        capacity = sum(board.edge_capacity_left(e) for e in unblocked)
-        assert capacity >= edges_left, \
-            f"Node {node}'s neighbors {unblocked} don't have enough capacity"
-
-        actions = []
-        for e in unblocked:
-            capacity_without_e = capacity - board.edge_capacity_left(e)
-            if edges_left > capacity_without_e:
-                num = min(MAX_VAL, edges_left - capacity_without_e)
-                actions.append(Action(e.ix, num))
-
-        if len(actions) > 0:
-            return Move(actions, True), ix
-
-    return None, 0
+@dataclass
+class SearchState:
+    ix: int
+    definite: bool
 
 
 @dataclass
 class BacktrackFrame:
-    move: Move
-    ix: int
+    move: List[Action]
+    search_state: SearchState
 
 
-def backtrack(board: Board, backtrack_stack: List[BacktrackFrame]) -> int:
+def find_move(board: Board, search_state: SearchState = SearchState(0, True)) \
+        -> Union[BacktrackFrame, None]:
+    """Find a move, preferring one that is logically required by the board
+    state."""
+    # look for an action that must be performed
+    if search_state.definite:
+        for ix in range(search_state.ix, len(board.nodes)):
+            # an adjacent edge needs to be filled if removing it would make it
+            # impossible to satisfy the node's target value.
+            node = board.nodes[ix]
+
+            edges_left = board.edges_left(node)
+            if edges_left == 0:
+                continue
+
+            unblocked = board.unblocked_edges(node)
+            capacity = sum(board.edge_capacity_left(e) for e in unblocked)
+            assert capacity >= edges_left, \
+                f"Node {node}'s neighbors {unblocked} don't have enough capacity"
+
+            actions = []
+            for e in unblocked:
+                capacity_without_e = capacity - board.edge_capacity_left(e)
+                if edges_left > capacity_without_e:
+                    num = min(MAX_VAL, edges_left - capacity_without_e)
+                    actions.append(Action(e.ix, num))
+
+            if len(actions) > 0:
+                return BacktrackFrame(actions,
+                                      SearchState(ix, True))
+
+    # naively iterate over edges
+    start_ix = 0 if search_state.definite else search_state.ix
+    for ix in range(start_ix, len(board.edges)):
+        edge = board.edges[ix]
+
+        if len(board.blocked_by(edge)) > 0:
+            # blocked; continue
+            continue
+
+        if board.edge_capacity_left(edge) > 0 and \
+            board.edges_left(edge.a) > 0 and \
+            board.edges_left(edge.b) > 0:
+            return BacktrackFrame([Action(edge.ix, 1)],
+                                  SearchState(edge.ix, False))
+
+    return None
+
+
+def backtrack(board: Board, backtrack_stack: List[BacktrackFrame]) -> SearchState:
     """Go back up the stack undoing actions until we find a non-definite
     action."""
     assert len(backtrack_stack) > 0, "Backtrack stack is empty"
     frame = backtrack_stack.pop()
     board.undo(frame.move)
 
-    while frame.move.definite:
+    while frame.search_state.definite:
         frame = backtrack_stack.pop()
         board.undo(frame.move)
 
-    if frame.move.definite:
+    if frame.search_state.definite:
         # all actions definite and still failed, unsolvable puzzle
         raise ValueError("This puzzle isn't solvable")
 
-    return frame.node.ix + 1
+    return frame
 
 
 def solve(board: Board, maxiter=10000):
@@ -355,18 +373,19 @@ def solve(board: Board, maxiter=10000):
     while iters < maxiter and not solved(board):
         if in_bad_state(board):
             start_at = backtrack(board, backtrack_stack)
-            move, ix = find_move(board, start_at)
+            ss = find_move(board, start_at)
         else:
-            move, ix = find_move(board, 0)
-            if move is None:
-                start_at = backtrack(board, backtrack_stack)
-                move, ix = find_move(board, start_at)
+            ss = find_move(board)
+            if ss is None:
+                ss = backtrack(board, backtrack_stack)
+                ss.ix += 1
+                ss = find_move(board, ss)
 
-        if move is None:
+        if ss is None:
             raise Exception("Puzzle unsolvable or rules incomplete")
 
-        board.do(move)
-        backtrack_stack.append(BacktrackFrame(move, ix))
+        board.do(ss.move)
+        backtrack_stack.append(ss)
 
         iters += 1
 
@@ -376,7 +395,7 @@ if __name__ == "__main__":
     file = args[1]
 
     grid = parse_file(file)
-    print(grid)
     board = Board(grid)
+
     solve(board)
     board.render()
