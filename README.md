@@ -10,4 +10,7 @@ follows:
 
 
 # Installation and Usage
-This was written using Python 3.9.6.
+This was written using Python 3.9.6. Install it from pipenv using 
+`pipenv install`.
+
+Usage: `python hashi.py [puzzle file path]`
